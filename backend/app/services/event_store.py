@@ -49,7 +49,12 @@ CREATE TABLE IF NOT EXISTS tasks (
 class EventStore:
     def __init__(self, db_path: str) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        # check_same_thread=False: FastAPI serves sync routes from a
+        # worker thread pool. Single-process, single-writer usage; the
+        # store is not shared between processes.
+        self.conn = sqlite3.connect(
+            db_path, check_same_thread=False, timeout=10
+        )
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()

@@ -144,6 +144,9 @@ class HrisIntakeService:
 
         event = self.store.persist(result.event)
         ready = self.engine.next_batch(event)
+        # Persist the intake-time batch transitions (PENDING ->
+        # READY / AWAITING_APPROVAL) so a reload reflects reality.
+        self.store.save_task_states(event)
 
         return {
             "accepted": True,
@@ -157,5 +160,8 @@ class HrisIntakeService:
                 {"id": t.id, "title": t.title}
                 for t in event.tasks
                 if t.status.value == "awaiting_approval"
+                and all(
+                    dep in event._settled() for dep in t.depends_on
+                )
             ],
         }

@@ -89,20 +89,26 @@ class PersonEvent:
                 return task
         return None
 
-    def next_ready(self) -> list[Task]:
-        """Tasks whose dependencies are all complete and are runnable."""
+    def _settled(self) -> set[str]:
+        """Ids of tasks whose outcome is decided: completed, or
+        deliberately rejected by a human (a rejection RELEASES its
+        dependents — the checklist must not deadlock on a legal hold —
+        but each dependent keeps its own risk gate)."""
 
-        ready: list[Task] = []
-        done = {
+        return {
             task.id
             for task in self.tasks
-            if task.status == TaskStatus.COMPLETED
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.REJECTED)
         }
 
-        for task in self.tasks:
-            if task.status == TaskStatus.PENDING and all(
-                dep in done for dep in task.depends_on
-            ):
-                ready.append(task)
+    def next_ready(self) -> list[Task]:
+        """Pending tasks whose dependencies are all settled."""
 
-        return ready
+        settled = self._settled()
+
+        return [
+            task
+            for task in self.tasks
+            if task.status == TaskStatus.PENDING
+            and all(dep in settled for dep in task.depends_on)
+        ]

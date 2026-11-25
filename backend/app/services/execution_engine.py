@@ -80,15 +80,11 @@ class ExecutionEngine:
                 task.status = TaskStatus.READY
                 cleared.append(task)
 
-        done = {
-            task.id
-            for task in event.tasks
-            if task.status == TaskStatus.COMPLETED
-        }
+        settled = event._settled()
 
         for task in event.tasks:
             if task.status == TaskStatus.APPROVED and all(
-                dep in done for dep in task.depends_on
+                dep in settled for dep in task.depends_on
             ):
                 cleared.append(task)
 
@@ -222,12 +218,10 @@ class ExecutionEngine:
         return task
 
     def _dependencies_met(self, event: PersonEvent, task: Task) -> bool:
-        done = {
-            other.id
-            for other in event.tasks
-            if other.status == TaskStatus.COMPLETED
-        }
-        return all(dep in done for dep in task.depends_on)
+        # Rejections count as settled: a rejected dependency does not
+        # veto the rest of the checklist forever.
+        settled = event._settled()
+        return all(dep in settled for dep in task.depends_on)
 
     def _audit(
         self,
