@@ -6,6 +6,12 @@ checklist for every hire and departure, runs the safe steps
 automatically, and refuses to run the dangerous ones until a named human
 approves them.
 
+**Why it exists:** offboarding gaps — accounts left active after a
+departure — are one of the most common security audit findings in small
+companies, and they happen because the process lives in someone's head
+or a stale spreadsheet. Turnstile makes the process executable,
+orderable, and provable.
+
 Private work-in-progress. See also: [TriageBot](https://github.com/hvnwarrior/IT-copilot) — IT support
 triage assistant with security escalation.
 
@@ -161,6 +167,36 @@ Interactive docs at `/docs` once the server runs.
 - **`advance` is idempotent.** It answers "what can run now,"
   including tasks left READY by a crashed client — recovery, not
   re-triggering.
+
+## Scope, limits, and what's next
+
+Being explicit about what is real today and what is a seam:
+
+**Real now**
+- Full intake → gate → approval → audit → report pipeline, exercised
+  end to end by tests and the offline demo
+- Structural approval gates, settled-dependency semantics, fail-closed
+  HMAC verification, persistence across restarts
+- Optional LLM advisor, hardened behind the closed-vocabulary registry
+
+**Deliberate seams (by design, not oversight)**
+- The executor is a **dry-run recorder**: Turnstile records exactly
+  what it *would* do (the Workspace / Entra ID / Jamf calls) instead of
+  doing it. Swapping in a real executor is a single class implementing
+  one method — the approval logic above it doesn't change. The demo
+  story is "propose with precision, execute only with sign-off."
+- The advisor runs on an injected client and ships disabled by default;
+  wiring Anthropic is a config change, and the system works fully
+  without it.
+- Single-process SQLite. Right-sized for a 15–80 person shop;
+  multi-worker deployment would swap the store, not the domain model.
+
+**Next**
+- Minimal technician console (approve/reject UI over the API)
+- A real executor for one IdP as the reference integration
+- Reminder loop for offboardings sitting in `awaiting_approval` too
+  long — stalls are failure conditions, so they should page, like
+  TriageBot's security escalation
 
 ## Testing
 
