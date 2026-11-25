@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     risk_tier TEXT NOT NULL,
     depends_on TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
+    assignees TEXT NOT NULL DEFAULT '',
     executed_by TEXT,
     decided_by TEXT,
     decision_note TEXT,
@@ -57,6 +58,15 @@ class EventStore:
         )
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+
+        # Migration for databases created before assignees existed.
+        try:
+            self.conn.execute(
+                "ALTER TABLE tasks ADD COLUMN assignees TEXT NOT NULL DEFAULT ''"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
         self.conn.commit()
 
     def persist(self, event: PersonEvent) -> PersonEvent:
@@ -80,8 +90,8 @@ class EventStore:
             self.conn.execute(
                 "INSERT INTO tasks "
                 "(event_id, task_id, title, risk_tier, depends_on, status, "
-                " executed_by, decided_by, decision_note, failure_reason) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " assignees, executed_by, decided_by, decision_note, failure_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.id,
                     task.id,
@@ -89,6 +99,7 @@ class EventStore:
                     task.risk_tier.value,
                     ",".join(task.depends_on),
                     task.status.value,
+                    ",".join(task.assignees),
                     task.executed_by,
                     task.decided_by,
                     task.decision_note,
@@ -116,6 +127,9 @@ class EventStore:
                     dep for dep in trow["depends_on"].split(",") if dep
                 ],
                 status=TaskStatus(trow["status"]),
+                assignees=[
+                    part for part in (trow["assignees"] or "").split(",") if part
+                ],
                 executed_by=trow["executed_by"],
                 decided_by=trow["decided_by"],
                 decision_note=trow["decision_note"],

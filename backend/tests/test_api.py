@@ -110,7 +110,7 @@ def test_full_offboarding_via_api(client):
 
     client.post(
         f"/events/{event_id}/tasks/disable_sso_account/approve",
-        json={"approver": "Priya"},
+        json={"approver": "it-admin"},
     )
     client.post(
         f"/events/{event_id}/tasks/disable_sso_account/execute", json={}
@@ -122,7 +122,7 @@ def test_full_offboarding_via_api(client):
     client.post(f"/events/{event_id}/advance")
     client.post(
         f"/events/{event_id}/tasks/revoke_remote_access/approve",
-        json={"approver": "Priya"},
+        json={"approver": "it-admin"},
     )
     client.post(f"/events/{event_id}/tasks/revoke_remote_access/execute", json={})
     client.post(f"/events/{event_id}/tasks/revoke_saas_licenses/execute", json={})
@@ -136,7 +136,8 @@ def test_full_offboarding_via_api(client):
     data = report.json()
     assert data["verdict"] == "complete"
     ledger = {e["task_id"]: e for e in data["task_ledger"]}
-    assert ledger["reclaim_device"]["decided_by"] == "Priya"
+    assert ledger["reclaim_device"]["decided_by"] == "Priya"      # manager-owned
+    assert ledger["disable_sso_account"]["decided_by"] == "it-admin"  # IT-owned
     assert ledger["disable_sso_account"]["risk_tier"] == "approval_required"
 
 

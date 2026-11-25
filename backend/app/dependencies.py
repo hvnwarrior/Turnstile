@@ -18,7 +18,7 @@ def build_services(settings=None) -> dict:
     audit = AuditLogService(settings.audit_log_path)
     store = EventStore(settings.database_path)
     engine = ExecutionEngine(executor=DryRunExecutor(), audit_service=audit)
-    builder = ChecklistBuilder()
+    builder = ChecklistBuilder(default_approver=settings.default_approver)
     hris_intake = HrisIntakeService(
         builder=builder,
         engine=engine,

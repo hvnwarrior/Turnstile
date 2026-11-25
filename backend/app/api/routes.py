@@ -50,6 +50,7 @@ def _task_dicts(event) -> list[dict]:
             "risk_tier": task.risk_tier.value,
             "status": task.status.value,
             "depends_on": list(task.depends_on),
+            "assignees": list(task.assignees),
             "executed_by": task.executed_by,
             "decided_by": task.decided_by,
             "decision_note": task.decision_note,
@@ -145,9 +146,10 @@ def advance(request: Request, event_id: int) -> dict:
             for t in cleared
         ],
         "awaiting_approval": [
-            {"id": t.id, "title": t.title}
+            {"id": t.id, "title": t.title, "assignees": list(t.assignees)}
             for t in event.tasks
             if t.status.value == "awaiting_approval"
+            and all(dep in settled for dep in t.depends_on)
         ],
     }
 
@@ -171,7 +173,9 @@ def approve_task(
         services["engine"].approve(
             event, task_id, approver=approver, note=body.get("note")
         )
-    except (ValueError, KeyError, PermissionError) as error:
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error))
+    except (ValueError, KeyError) as error:
         raise HTTPException(status_code=422, detail=str(error))
 
     _save(services, event)
@@ -193,7 +197,9 @@ def reject_task(
         services["engine"].reject(
             event, task_id, rejector=rejector, reason=body.get("reason", "")
         )
-    except (ValueError, KeyError, PermissionError) as error:
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error))
+    except (ValueError, KeyError) as error:
         raise HTTPException(status_code=422, detail=str(error))
 
     _save(services, event)

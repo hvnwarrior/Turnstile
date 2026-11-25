@@ -152,6 +152,12 @@ class ExecutionEngine:
                 f"'{task.status.value}'."
             )
 
+        if task.assignees and approver not in task.assignees:
+            raise PermissionError(
+                f"Only assignees may approve '{task_id}' "
+                f"(assignees: {', '.join(task.assignees)})."
+            )
+
         if not self._dependencies_met(event, task):
             raise ValueError(
                 f"Task '{task_id}' has incomplete dependencies."
@@ -191,6 +197,12 @@ class ExecutionEngine:
             raise ValueError(
                 f"Task '{task_id}' is already terminal "
                 f"({task.status.value})."
+            )
+
+        if task.assignees and rejector not in task.assignees:
+            raise PermissionError(
+                f"Only assignees may reject '{task_id}' "
+                f"(assignees: {', '.join(task.assignees)})."
             )
 
         task.status = TaskStatus.REJECTED

@@ -51,6 +51,10 @@ class Task:
     risk_tier: RiskTier
     depends_on: list[str] = field(default_factory=list)  # task ids
     status: TaskStatus = TaskStatus.PENDING
+    # Named humans accountable for this task (resolved at build time
+    # from intake roles: the manager, the configured IT admin). Only
+    # assignees may approve or reject a gated task.
+    assignees: list[str] = field(default_factory=list)
     executed_by: str | None = None      # "automation" or a human handle
     decided_by: str | None = None       # approver handle, if gated
     decision_note: str | None = None   # why the human said yes/no

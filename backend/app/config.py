@@ -13,6 +13,9 @@ class AppSettings(BaseSettings):
     hris_webhook_secret: str = ""       # HMAC secret; empty disables
     hris_require_signature: bool = True
 
+    # Handle substituted for the "it_admin" assignee role
+    default_approver: str = "it-admin"
+
     # LLM advisor (added next slice)
     anthropic_api_key: str = ""
 

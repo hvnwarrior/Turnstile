@@ -44,10 +44,18 @@ class TaskSpec:
     title: str
     risk_tier: RiskTier
     depends_on: tuple[str, ...] = ()
+    # Who is accountable for approving this task, as ROLES resolved at
+    # build time: "manager" (from intake) and/or "it_admin" (from
+    # settings). Roles, not handles, so assignments follow the data.
+    assignee_roles: tuple[str, ...] = ()
     # Included only when this boolean intake flag is truthy. Absent or
     # falsy means the task is skipped — with defaults chosen so that a
     # destructive task is skipped rather than assumed.
     requires_flag: str | None = None
+
+    @property
+    def is_gated(self) -> bool:
+        return self.risk_tier == RiskTier.APPROVAL_REQUIRED
 
 
 ONBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
@@ -83,6 +91,7 @@ ONBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
         title="Release initial credentials to manager for first-day handoff",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         depends_on=("create_account",),
+        assignee_roles=("manager", "it_admin"),
     ),
     TaskSpec(
         id="schedule_orientation",
@@ -109,12 +118,14 @@ OFFBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
         title="Disable SSO account",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         depends_on=("transfer_files", "set_mail_forwarding"),
+        assignee_roles=("it_admin",),
     ),
     TaskSpec(
         id="revoke_remote_access",
         title="Revoke VPN and remote access",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         depends_on=("disable_sso_account",),
+        assignee_roles=("it_admin",),
     ),
     TaskSpec(
         # Re-licensing is easy; revoking a license is reversible.
@@ -128,12 +139,14 @@ OFFBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
         title="Wipe and reclaim company device",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         requires_flag="has_company_device",
+        assignee_roles=("manager",),
     ),
     TaskSpec(
         id="deactivate_badge",
         title="Deactivate building badge",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         requires_flag="has_building_access",
+        assignee_roles=("it_admin", "manager"),
     ),
     # Fan-in: added at build time, depends on every other included task.
     TaskSpec(
@@ -172,15 +185,17 @@ def _truthy(value) -> bool:
 
 
 class ChecklistBuilder:
-    def __init__(self, clock=None) -> None:
+    def __init__(self, clock=None, default_approver: str = "it-admin") -> None:
         """clock: zero-arg callable returning an ISO timestamp string;
-        defaults to utcnow. Injectable for tests."""
+        defaults to utcnow. default_approver: the handle substituted for
+        the "it_admin" role. Injectable for tests."""
 
         from datetime import datetime, timezone
 
         self.clock = clock or (
             lambda: datetime.now(timezone.utc).isoformat()
         )
+        self.default_approver = default_approver
 
     def build(
         self,
@@ -224,7 +239,19 @@ class ChecklistBuilder:
                 ),
             )
 
-        tasks = self._instantiate(template, details)
+        tasks, unowned = self._instantiate(template, details)
+
+        if unowned:
+            # An irreversible step with no accountable human is a
+            # refusal, same stance as missing intake data.
+            return BuildResult(
+                missing=[f"approver:{task_id}" for task_id in unowned],
+                message=(
+                    "Refusing to build: irreversible step(s) with no "
+                    f"accountable human: {', '.join(unowned)}. Configure "
+                    "an approver or name a manager."
+                ),
+            )
 
         return BuildResult(
             event=PersonEvent(
@@ -241,7 +268,25 @@ class ChecklistBuilder:
     # Internals
     # ------------------------------------------------------------------
 
-    def _instantiate(self, template, details: dict) -> list[Task]:
+    def _resolve_assignees(self, roles, details: dict) -> list[str]:
+        resolved: list[str] = []
+
+        for role in roles:
+            if role == "manager":
+                handle = details.get("manager", "")
+            elif role == "it_admin":
+                handle = self.default_approver
+            else:
+                handle = ""
+
+            if handle and handle not in resolved:
+                resolved.append(handle)
+
+        return resolved
+
+    def _instantiate(self, template, details: dict):
+        """Returns (tasks, unowned_gated_ids)."""
+
         included_specs = [
             spec
             for spec in template
@@ -252,6 +297,7 @@ class ChecklistBuilder:
         included_ids = [spec.id for spec in included_specs]
 
         tasks: list[Task] = []
+        unowned: list[str] = []
 
         for spec in included_specs:
             dependencies = list(spec.depends_on)
@@ -264,16 +310,22 @@ class ChecklistBuilder:
                     if task_id != spec.id
                 ]
 
+            assignees = self._resolve_assignees(spec.assignee_roles, details)
+
+            if spec.is_gated and not assignees:
+                unowned.append(spec.id)
+
             tasks.append(
                 Task(
                     id=spec.id,
                     title=spec.title,
                     risk_tier=spec.risk_tier,
                     depends_on=dependencies,
+                    assignees=assignees,
                 )
             )
 
-        return tasks
+        return tasks, unowned
 
 
 REQUIRED_INTAKE = ["person_name", "requested_by"]

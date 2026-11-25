@@ -125,7 +125,7 @@ def test_revocation_audit_fans_in(builder):
 
 def test_full_offboarding_run_through_engine(builder):
     """End-to-end: intake -> checklist -> gated execution completes,
-    with gated tasks requiring approval at each step."""
+    with each gated task approved by one of ITS assignees."""
 
     result = builder.build(
         EventType.OFFBOARDING, "Sam Ray", "hr", OFFBOARDING_PAYLOAD
@@ -147,7 +147,9 @@ def test_full_offboarding_run_through_engine(builder):
             if not awaiting:
                 break
             for task in awaiting:
-                engine.approve(event, task.id, approver="Priya")
+                # The first assignee acts — they are authorized by
+                # construction.
+                engine.approve(event, task.id, approver=task.assignees[0])
             continue
 
         for task in batch:
@@ -159,10 +161,63 @@ def test_full_offboarding_run_through_engine(builder):
     assert all(s == TaskStatus.COMPLETED for s in statuses.values())
     assert "disable_sso_account" in completed
 
-    # Every gated task got its approval from a named human.
+    # Every gated task got its approval from a NAMED ASSIGNEE.
     for task in event.tasks:
         if task.is_gated:
-            assert task.decided_by == "Priya"
+            assert task.decided_by in task.assignees
+
+
+def test_non_assignee_cannot_approve(builder):
+    """The gate knows WHO is allowed: the manager can wipe the device,
+    but the manager cannot disable SSO (assigned to the IT admin)."""
+
+    from app.services.execution_engine import ExecutionEngine as Engine
+
+    result = builder.build(
+        EventType.OFFBOARDING, "Sam Ray", "hr", OFFBOARDING_PAYLOAD
+    )
+    engine = Engine(audit_service=AuditRecorder())
+    event = result.event
+
+    engine.next_batch(event)
+
+    # reclaim_device is assigned to the manager (Priya)...
+    reclaim = event.task_by_id("reclaim_device")
+    assert reclaim.assignees == ["Priya"]
+    engine.approve(event, "reclaim_device", approver="Priya")
+
+    # Unblock the SSO disable (finish its AUTO dependencies) so it is
+    # legitimately awaiting approval — then the AUTHORIZATION rule is
+    # the only thing that can stop Priya.
+    for task_id in ("transfer_files", "set_mail_forwarding"):
+        engine.execute(event, task_id, actor="automation")
+    engine.next_batch(event)
+
+    sso = event.task_by_id("disable_sso_account")
+    assert sso.assignees == ["it-admin"]
+    assert sso.status == TaskStatus.AWAITING_APPROVAL
+    with pytest.raises(PermissionError):
+        engine.approve(event, "disable_sso_account", approver="Priya")
+
+    # And the assignee succeeds where the non-assignee was refused.
+    engine.approve(event, "disable_sso_account", approver="it-admin")
+    assert sso.status == TaskStatus.APPROVED
+
+
+def test_missing_manager_refuses_owned_tasks(builder):
+    """Device wipe is manager-owned: no manager in intake -> refusal,
+    because an irreversible step must not float ownerless."""
+
+    payload = {k: v for k, v in OFFBOARDING_PAYLOAD.items() if k != "manager"}
+    result = builder.build(EventType.OFFBOARDING, "Sam Ray", "hr", payload)
+
+    # Refusal happens at intake-validation level for manager itself...
+    if not result.ok:
+        assert "manager" in result.missing
+        return
+
+    # ...or, if manager were optional, the owned task must refuse.
+    assert any("approver:" in m for m in result.missing)
 
 
 def test_built_checklist_dependencies_resolve(builder):
