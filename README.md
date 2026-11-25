@@ -36,8 +36,17 @@ Early development. Current components:
 - `backend/tests/` — 28 tests covering gate semantics, refusal,
   signatures, and persistence
 
-Still to come: LLM task advisor (closed-vocabulary suggestions only),
-API layer, revocation audit report, demo script.
+- `backend/app/services/revocation_audit.py` — the "everything
+  verified revoked" report: per-task ledger with attribution, plus
+  verdicts (complete / exceptions_found / in_progress) so a stalled
+  offboarding can't hide
+- `backend/app/services/task_advisor.py` — optional LLM advisor that
+  suggests tasks ONLY from the human-authored registry (closed
+  vocabulary); invented ids are dropped, risk tiers always come from
+  the registry, and a human must accept each suggestion before it
+  becomes a task
+
+Still to come: API layer, demo script.
 
 See also: [TriageBot](https://github.com/hvnwarrior/IT-copilot) — IT
 support triage assistant with security escalation.
