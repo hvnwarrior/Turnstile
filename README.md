@@ -33,8 +33,6 @@ Early development. Current components:
 - `backend/app/services/event_store.py` — SQLite persistence; an
   in-flight offboarding survives a restart
 - `backend/app/services/audit_service.py` — append-only JSONL audit log
-- `backend/tests/` — 28 tests covering gate semantics, refusal,
-  signatures, and persistence
 
 - `backend/app/services/revocation_audit.py` — the "everything
   verified revoked" report: per-task ledger with attribution, plus
@@ -46,7 +44,32 @@ Early development. Current components:
   the registry, and a human must accept each suggestion before it
   becomes a task
 
-Still to come: API layer, demo script.
+- `backend/app/api/routes.py` — FastAPI surface: HRIS intake,
+  event inspection, approve/reject/execute, advisor endpoints, and
+  the revocation report. Every mutation reloads from the store; the
+  database is the source of truth, not process memory.
+- `scripts/demo.py` — end-to-end offboarding narrative: unsigned
+  webhook bounced, incomplete intake refused with the exact missing
+  fields, gated task blocked without approval (403), named human
+  approves, one deliberate rejection ("legal hold") preserved forever
+  in the final ledger. Run `python scripts/demo.py --offline` from the
+  repo root (no server needed).
+- `backend/tests/` — 46 tests: gate semantics, refusal, fail-closed
+  signatures, persistence, closed-vocabulary advisor, revocation
+  verdicts, and full HTTP-flow integration tests
+
+## Design semantics worth knowing
+
+- **Dependencies settle, they don't have to succeed.** A rejected task
+  releases its dependents — a legal hold must not deadlock the whole
+  checklist — but each dependent keeps its own risk gate, so a
+  rejected SSO-disable never auto-authorizes the VPN revoke.
+- **Approvals attach to runnable tasks only.** A gated task surfaces
+  for approval when it can actually run; early approvals would go
+  stale in a queue.
+- **`advance` is idempotent.** It answers "what can run now,"
+  including tasks left READY by a crashed client — recovery, not
+  re-triggering.
 
 See also: [TriageBot](https://github.com/hvnwarrior/IT-copilot) — IT
 support triage assistant with security escalation.
