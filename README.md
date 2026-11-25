@@ -49,9 +49,14 @@ revocation report: per-task ledger, attribution, verdict
    declared in code and reviewed like any other code — never inferred
    from free text.
 3. **Advance.** The engine surfaces what can run now. AUTO tasks are
-   cleared for automation; gated tasks wait for a named approver.
-   Conditional tasks (device reclaim, badge) only appear when the
-   intake explicitly asserts them.
+   cleared for automation; gated tasks wait for **their assignees** —
+   named humans resolved at build time from roles: the manager comes
+   from the intake payload, the IT admin from config (`reclaim_device`
+   is manager-owned; `disable_sso_account` is IT-owned). Only assignees
+   may approve or reject. When a task becomes runnable, its assignees
+   are notified; when one of them decides, the *other* assignees are
+   told who decided and why — and every notification is recorded in
+   the audit log, so "we told them" is a provable claim.
 4. **Execute.** Cleared tasks run through a pluggable executor. The
    default is a dry-run recorder for demos; production executors wrap
    Google Workspace / Entra ID / Jamf APIs without touching approval
@@ -128,29 +133,39 @@ Interactive docs at `/docs` once the server runs.
 
 ## Design principles
 
-1. **Risk is declared, not inferred.** Every task carries a
+1. **Accountability has a name.** Every gated task carries assignees
+   resolved from data you already have (manager from intake, IT admin
+   from config) — never picked ad hoc per ticket. Only assignees may
+   approve or reject, so the gate answers *who is allowed*, not just
+   *that someone must*. An irreversible step that resolves to no
+   accountable human refuses the build.
+2. **Silence is a failure condition — in onboarding too.** Assignees
+   are notified when they own a decision and when a co-assignee acts,
+   and every notification is logged. Decisions propagate to the whole
+   responsible pair, not just the person who clicked.
+3. **Risk is declared, not inferred.** Every task carries a
    human-authored risk tier: `AUTO` (reversible, low blast radius) or
    `APPROVAL_REQUIRED` (irreversible, destructive, or sensitive). The
    gate is enforced by structure — approval and execution are separate
    code paths, so no refactor can merge them.
-2. **Refuse over fabricate.** Missing intake data means refusal with
+4. **Refuse over fabricate.** Missing intake data means refusal with
    the exact list of what's needed. A guessed `last_day` or wrong
    manager embedded in an access decision is worse than no checklist.
-3. **The LLM proposes; the registry disposes.** The optional advisor
+5. **The LLM proposes; the registry disposes.** The optional advisor
    may suggest tasks only from the registry's closed vocabulary.
    Invented ids are dropped; risk tiers always come from the registry;
    a human must accept each suggestion. No API key configured — the
    advisor reports `advisor_disabled` and the system degrades to the
    deterministic checklist, never to fabrication.
-4. **Silence and stalls are failure conditions.** The revocation
+6. **Stalls are failure conditions.** The revocation
    report names outstanding tasks and preserves rejections with their
    reasons ("legal hold active") — a deliberate stop stays visible
    forever, and nothing disappears into a backlog.
-5. **Every path is auditable.** Intake, approval, rejection, and
+7. **Every path is auditable.** Intake, approval, rejection, and
    execution are attributed to named actors in an append-only log.
    `reclaim_device: approved by Priya — departure confirmed` is a
    first-class fact, not a debug log line.
-6. **Fail closed.** Signature verification rejects before parsing; a
+8. **Fail closed.** Signature verification rejects before parsing; a
    misconfigured secret (required=true but secret unset) raises rather
    than silently accepting. Signature checks that fail open are worse
    than no check.
@@ -200,11 +215,12 @@ Being explicit about what is real today and what is a seam:
 
 ## Testing
 
-46 tests, all offline: gate semantics, refusal with exact missing
+54 tests, all offline: gate semantics, assignee authorization, refusal with exact missing
 lists, fail-closed signatures, persistence and reload, the
 closed-vocabulary advisor (including an LLM that tries to invent a
 task and one that lies about risk tiers), revocation verdicts, and
-full HTTP-flow integration tests through the real FastAPI app.
+assignment notifications (fire-once, co-assignee decisions, logged),
+and full HTTP-flow integration tests through the real FastAPI app.
 
 ```bash
 cd backend && python -m pytest

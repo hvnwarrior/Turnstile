@@ -5,6 +5,7 @@ from app.services.audit_service import AuditLogService
 from app.services.checklist_builder import ChecklistBuilder
 from app.services.event_store import EventStore
 from app.services.execution_engine import DryRunExecutor, ExecutionEngine
+from app.services.notification_service import NotificationService
 from app.services.hris_intake import HrisIntakeService
 from app.services.revocation_audit import RevocationAuditService
 from app.services.task_advisor import TaskAdvisor
@@ -17,7 +18,12 @@ def build_services(settings=None) -> dict:
 
     audit = AuditLogService(settings.audit_log_path)
     store = EventStore(settings.database_path)
-    engine = ExecutionEngine(executor=DryRunExecutor(), audit_service=audit)
+    notifications = NotificationService(audit_service=audit)
+    engine = ExecutionEngine(
+        executor=DryRunExecutor(),
+        audit_service=audit,
+        notification_service=notifications,
+    )
     builder = ChecklistBuilder(default_approver=settings.default_approver)
     hris_intake = HrisIntakeService(
         builder=builder,

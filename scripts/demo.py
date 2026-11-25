@@ -234,8 +234,11 @@ def run_offline() -> int:
                                   reason="legal hold active on badge data")
                     print("  rejected deactivate_badge (legal hold)")
                 else:
-                    engine.approve(event, task.id, approver="Priya")
-                    print(f"  approved {task.id}")
+                    # Approve AS THE TASK'S ASSIGNEE — the engine only
+                    # accepts decisions from assignees.
+                    engine.approve(event, task.id,
+                                   approver=task.assignees[0])
+                    print(f"  approved {task.id} (by {task.assignees[0]})")
 
         progressed = False
         for task in list(event.tasks):

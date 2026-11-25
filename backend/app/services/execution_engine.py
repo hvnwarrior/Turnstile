@@ -52,9 +52,12 @@ class DryRunExecutor:
 
 
 class ExecutionEngine:
-    def __init__(self, executor=None, audit_service=None) -> None:
+    def __init__(
+        self, executor=None, audit_service=None, notification_service=None
+    ) -> None:
         self.executor = executor or DryRunExecutor()
         self.audit_service = audit_service
+        self.notification_service = notification_service
 
     # ------------------------------------------------------------------
     # Progressing a run
@@ -76,6 +79,13 @@ class ExecutionEngine:
         for task in event.next_ready():
             if task.is_gated:
                 task.status = TaskStatus.AWAITING_APPROVAL
+
+                # Fire exactly once per task, on this transition only;
+                # repeated advance() calls never re-notify.
+                if self.notification_service is not None:
+                    self.notification_service.notify_awaiting_approval(
+                        event, task
+                    )
             else:
                 task.status = TaskStatus.READY
                 cleared.append(task)
@@ -175,6 +185,12 @@ class ExecutionEngine:
             details={"note": note},
         )
 
+        if self.notification_service is not None:
+            self.notification_service.notify_decision(
+                event, task, decided_by=approver,
+                decision="approved", note=note,
+            )
+
         return task
 
     def reject(
@@ -216,6 +232,12 @@ class ExecutionEngine:
             task=task,
             details={"reason": reason},
         )
+
+        if self.notification_service is not None:
+            self.notification_service.notify_decision(
+                event, task, decided_by=rejector,
+                decision="rejected", note=reason,
+            )
 
         return task
 
