@@ -389,3 +389,123 @@ def test_fallback_does_not_touch_resolved_assignees(fallback_builder):
     ]
     substituted_ids = {s["task_id"] for s in result.substitutions}
     assert "disable_sso_account" not in substituted_ids
+
+
+# ----------------------------------------------------------------------
+# Due dates: anchored to start_date / last_day, computed at build time
+# ----------------------------------------------------------------------
+
+def test_due_dates_derive_from_onboarding_anchor(builder):
+    """start_date anchors every onboarding task: prep work BEFORE the
+    start date, handoff ON the start date."""
+
+    result = builder.build(
+        EventType.ONBOARDING, "Jordan Lee", "recruiting", ONBOARDING_PAYLOAD
+    )
+    assert result.ok
+
+    by_id = {t.id: t for t in result.event.tasks}
+
+    # start_date 2026-12-07 (Monday): account exists 3 days early.
+    assert by_id["create_account"].due_date == "2026-12-04"
+    # Credential handoff on day zero: the new hire must be able to
+    # log in on their first morning.
+    assert by_id["hand_off_credentials"].due_date == "2026-12-07"
+    # Prep work is never due after the person arrives.
+    for tid in ("create_account", "prepare_laptop"):
+        assert by_id[tid].due_date < "2026-12-07", tid
+
+
+def test_due_dates_derive_from_offboarding_anchor(builder):
+    """last_day anchors every offboarding task: the SSO kill lands the
+    day after departure (grace for last-day access), physical items
+    within a working week."""
+
+    result = builder.build(
+        EventType.OFFBOARDING, "Sam Ray", "hr", OFFBOARDING_PAYLOAD
+    )
+    assert result.ok
+
+    by_id = {t.id: t for t in result.event.tasks}
+
+    # last_day 2026-12-04 (Friday): access disabled by Saturday.
+    assert by_id["disable_sso_account"].due_date == "2026-12-05"
+    # File handover and mail forwarding: on the last day itself.
+    assert by_id["transfer_files"].due_date == "2026-12-04"
+    # Audit wraps up a week after departure.
+    assert by_id["run_revocation_audit"].due_date == "2026-12-11"
+    # Destructive steps keep a grace window, but bounded ones.
+    assert by_id["reclaim_device"].due_date == "2026-12-09"
+
+
+def test_unparseable_anchor_yields_no_due_dates(builder):
+    """A garbage anchor date fabricates NO deadlines: refusal over
+    fabrication applies to the calendar too."""
+
+    payload = {**ONBOARDING_PAYLOAD, "start_date": "not-a-date"}
+    result = builder.build(
+        EventType.ONBOARDING, "Jordan Lee", "recruiting", payload
+    )
+
+    # start_date is required intake data, but only truthiness is
+    # checked at intake; date PARSE happens at due-date computation.
+    # If the unparseable value passed intake, no task carries a
+    # fabricated due date.
+    if result.ok:
+        assert all(t.due_date is None for t in result.event.tasks)
+
+
+def test_due_dates_survive_persistence_roundtrip(tmp_path):
+    """due_date persists through save/load — a reload must not forget
+    deadlines (the future scheduler depends on them)."""
+
+    from app.services.event_store import EventStore
+
+    result = builder_from_clock().build(
+        EventType.OFFBOARDING, "Sam Ray", "hr", OFFBOARDING_PAYLOAD
+    )
+    assert result.ok
+
+    store = EventStore(str(tmp_path / "db.sqlite"))
+    store.persist(result.event)
+
+    reloaded = store.load_event(1)
+    by_id = {t.id: t for t in reloaded.tasks}
+    assert by_id["disable_sso_account"].due_date == "2026-12-05"
+    assert by_id["run_revocation_audit"].due_date == "2026-12-11"
+
+
+def builder_from_clock():
+    return ChecklistBuilder(clock=lambda: "2026-11-25T10:00:00+00:00")
+
+
+def test_approval_notification_includes_due_date():
+    """The assignee paging message carries the deadline — a due date
+    nobody sees is theater."""
+
+    from app.services.notification_service import NotificationService
+    from app.models import PersonEvent, Task as ModelTask
+
+    captured = []
+
+    class CaptureNotifier:
+        def send(self, recipient, message):
+            captured.append((recipient, message))
+
+    service = NotificationService(notifier=CaptureNotifier())
+    event = PersonEvent(
+        id=1, event_type=EventType.OFFBOARDING, person_name="Sam Ray",
+        requested_by="hr", created_at="2026-11-25T09:00:00+00:00",
+        tasks=[
+            ModelTask(
+                id="disable_sso_account", title="Disable SSO account",
+                risk_tier=RiskTier.APPROVAL_REQUIRED,
+                assignees=["it-admin"], due_date="2026-12-05",
+            )
+        ],
+    )
+
+    service.notify_awaiting_approval(event, event.tasks[0])
+
+    assert captured, "no notification captured"
+    assert "2026-12-05" in captured[0][1]

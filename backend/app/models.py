@@ -55,6 +55,12 @@ class Task:
     # from intake roles: the manager, the configured IT admin). Only
     # assignees may approve or reject a gated task.
     assignees: list[str] = field(default_factory=list)
+    # Deadline computed at build time from the event's anchor date
+    # (start_date for onboarding, last_day for offboarding) plus the
+    # spec's per-task offset in days. ISO date or None (None = the
+    # event carried no anchor; enforcement then rests with the
+    # assignee, not the clock).
+    due_date: str | None = None
     executed_by: str | None = None      # "automation" or a human handle
     decided_by: str | None = None       # approver handle, if gated
     decision_note: str | None = None   # why the human said yes/no

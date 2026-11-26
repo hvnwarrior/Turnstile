@@ -52,6 +52,11 @@ class TaskSpec:
     # falsy means the task is skipped — with defaults chosen so that a
     # destructive task is skipped rather than assumed.
     requires_flag: str | None = None
+    # Days relative to the event's anchor date (start_date for
+    # onboarding, last_day for offboarding) by which this task is due.
+    # Negative = before the anchor (prep work), positive = after
+    # (cleanup/grace). None = no deadline declared for this task.
+    due_offset_days: int | None = None
 
     @property
     def is_gated(self) -> bool:
@@ -61,17 +66,20 @@ class TaskSpec:
 ONBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
     TaskSpec(
         id="create_account",
+        due_offset_days=-3,
         title="Create directory account",
         risk_tier=RiskTier.AUTO,
     ),
     TaskSpec(
         id="add_department_groups",
+        due_offset_days=-2,
         title="Add to department mailing lists and groups",
         risk_tier=RiskTier.AUTO,
         depends_on=("create_account",),
     ),
     TaskSpec(
         id="prepare_laptop",
+        due_offset_days=-2,
         title="Prepare and assign laptop",
         risk_tier=RiskTier.AUTO,
         depends_on=("create_account",),
@@ -79,6 +87,7 @@ ONBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
     ),
     TaskSpec(
         id="install_role_software",
+        due_offset_days=-1,
         title="Install role-specific software",
         risk_tier=RiskTier.AUTO,
         depends_on=("prepare_laptop",),
@@ -88,6 +97,7 @@ ONBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
         # Credential handoff gives a third party access to sensitive
         # material: gated on purpose.
         id="hand_off_credentials",
+        due_offset_days=0,
         title="Release initial credentials to manager for first-day handoff",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         depends_on=("create_account",),
@@ -95,6 +105,7 @@ ONBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
     ),
     TaskSpec(
         id="schedule_orientation",
+        due_offset_days=0,
         title="Schedule orientation with manager",
         risk_tier=RiskTier.AUTO,
     ),
@@ -104,17 +115,20 @@ ONBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
 OFFBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
     TaskSpec(
         id="transfer_files",
+        due_offset_days=0,
         title="Transfer ownership of files and shared drives",
         risk_tier=RiskTier.AUTO,
     ),
     TaskSpec(
         id="set_mail_forwarding",
+        due_offset_days=0,
         title="Set mail forwarding/auto-reply to manager",
         risk_tier=RiskTier.AUTO,
     ),
     TaskSpec(
         # Killing the SSO account is the master switch: gated.
         id="disable_sso_account",
+        due_offset_days=1,
         title="Disable SSO account",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         depends_on=("transfer_files", "set_mail_forwarding"),
@@ -122,6 +136,7 @@ OFFBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
     ),
     TaskSpec(
         id="revoke_remote_access",
+        due_offset_days=1,
         title="Revoke VPN and remote access",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         depends_on=("disable_sso_account",),
@@ -130,12 +145,14 @@ OFFBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
     TaskSpec(
         # Re-licensing is easy; revoking a license is reversible.
         id="revoke_saas_licenses",
+        due_offset_days=3,
         title="Revoke SaaS licenses",
         risk_tier=RiskTier.AUTO,
         depends_on=("disable_sso_account",),
     ),
     TaskSpec(
         id="reclaim_device",
+        due_offset_days=5,
         title="Wipe and reclaim company device",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         requires_flag="has_company_device",
@@ -143,6 +160,7 @@ OFFBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
     ),
     TaskSpec(
         id="deactivate_badge",
+        due_offset_days=5,
         title="Deactivate building badge",
         risk_tier=RiskTier.APPROVAL_REQUIRED,
         requires_flag="has_building_access",
@@ -151,6 +169,7 @@ OFFBOARDING_TEMPLATE: tuple[TaskSpec, ...] = (
     # Fan-in: added at build time, depends on every other included task.
     TaskSpec(
         id="run_revocation_audit",
+        due_offset_days=7,
         title="Verify all access revoked and produce audit report",
         risk_tier=RiskTier.AUTO,
     ),
@@ -186,6 +205,28 @@ class BuildResult:
 
 def _truthy(value) -> bool:
     return bool(value)
+
+
+def _anchor_date(event_type: EventType, details: dict) -> str | None:
+    """The date everything else is measured against: start_date for
+    onboarding, last_day for offboarding. Returned as-is (ISO string
+    from intake) or None when absent/unparseable — a task with no
+    anchor gets no fabricated deadline."""
+
+    from datetime import date
+
+    key = (
+        "start_date"
+        if event_type == EventType.ONBOARDING
+        else "last_day"
+    )
+    raw = str(details.get(key, "")).strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except ValueError:
+        return None
 
 
 class ChecklistBuilder:
@@ -260,7 +301,9 @@ class ChecklistBuilder:
                 ),
             )
 
-        tasks, unowned, substitutions = self._instantiate(template, details)
+        tasks, unowned, substitutions = self._instantiate(
+            event_type, template, details
+        )
 
         if unowned:
             # An irreversible step with no accountable human is a
@@ -306,7 +349,7 @@ class ChecklistBuilder:
 
         return resolved
 
-    def _instantiate(self, template, details: dict):
+    def _instantiate(self, event_type: EventType, template, details: dict):
         """Returns (tasks, unowned_gated_ids, substitutions)."""
 
         included_specs = [
@@ -321,6 +364,8 @@ class ChecklistBuilder:
         tasks: list[Task] = []
         unowned: list[str] = []
         substitutions: list[dict] = []
+
+        anchor = _anchor_date(event_type, details)
 
         for spec in included_specs:
             dependencies = list(spec.depends_on)
@@ -352,6 +397,15 @@ class ChecklistBuilder:
                 else:
                     unowned.append(spec.id)
 
+            due_date = None
+            if anchor is not None and spec.due_offset_days is not None:
+                from datetime import date, timedelta
+
+                due_date = (
+                    date.fromisoformat(anchor)
+                    + timedelta(days=spec.due_offset_days)
+                ).isoformat()
+
             tasks.append(
                 Task(
                     id=spec.id,
@@ -359,6 +413,7 @@ class ChecklistBuilder:
                     risk_tier=spec.risk_tier,
                     depends_on=dependencies,
                     assignees=assignees,
+                    due_date=due_date,
                 )
             )
 

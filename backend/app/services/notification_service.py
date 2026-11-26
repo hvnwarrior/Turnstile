@@ -41,10 +41,11 @@ class NotificationService:
     def notify_awaiting_approval(
         self, event: PersonEvent, task: Task
     ) -> None:
+        deadline = f" Due by {task.due_date}." if task.due_date else ""
         message = (
             f"'{task.title}' for {event.person_name} "
             f"({event.event_type.value}) needs your approval — you are "
-            f"an assignee. Approve or reject with a reason."
+            f"an assignee.{deadline} Approve or reject with a reason."
         )
 
         for recipient in task.assignees:

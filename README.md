@@ -128,6 +128,7 @@ final report.
 | `POST /events/{id}/tasks/{tid}/execute` | Run a cleared task; 403 if gated and unapproved |
 | `POST /events/{id}/advisor/suggest` | LLM suggestions, registry-only |
 | `GET /events/{id}/revocation-report` | Ledger with attribution + verdict |
+| `GET /events/{id}/due-soon?within_days=N` | Unfinished tasks due within N days or overdue — the scheduler feed (see Roadmap) |
 
 Interactive docs at `/docs` once the server runs.
 
@@ -147,7 +148,13 @@ Interactive docs at `/docs` once the server runs.
 2. **Silence is a failure condition — in onboarding too.** Assignees
    are notified when they own a decision and when a co-assignee acts,
    and every notification is logged. Decisions propagate to the whole
-   responsible pair, not just the person who clicked.
+   responsible pair, not just the person who clicked. Notifications
+   carry the task's deadline: every task gets a due date at build
+   time, derived from the event's anchor date (start_date for hires,
+   last_day for departures) plus a per-task offset declared in the
+   template — prep before day one, SSO kill the day after the last
+   day, physical recovery within the week. An unparseable anchor
+   fabricates no deadlines.
 3. **Risk is declared, not inferred.** Every task carries a
    human-authored risk tier: `AUTO` (reversible, low blast radius) or
    `APPROVAL_REQUIRED` (irreversible, destructive, or sensitive). The
@@ -219,18 +226,23 @@ Being explicit about what is real today and what is a seam:
 - A real executor for one IdP as the reference integration
 - Reminder loop for offboardings sitting in `awaiting_approval` too
   long — stalls are failure conditions, so they should page, like
-  TriageBot's security escalation
+  TriageBot's security escalation. The data model and feed now exist
+  (due dates on every task; `GET /events/{id}/due-soon`), so the
+  remaining work is the paging loop itself, designed to live outside
+  the app in a self-hosted scheduler (n8n/cron) polling that endpoint
 
 ## Testing
 
-59 tests, all offline: gate semantics, assignee authorization, refusal with exact missing
+66 tests, all offline: gate semantics, assignee authorization, refusal with exact missing
 lists, fail-closed signatures, persistence and reload, the
 closed-vocabulary advisor (including an LLM that tries to invent a
 task and one that lies about risk tiers), revocation verdicts,
 assignment notifications (fire-once, co-assignee decisions, logged),
 the fallback approver (missing-manager gates route to IT, audited,
-fail-closed by default), and full HTTP-flow integration tests through
-the real FastAPI app.
+fail-closed by default), due dates (anchored arithmetic, persistence
+round-trip, deadline-bearing notifications, and the due-soon feed
+flagging overdue work while excluding settled tasks), and full
+HTTP-flow integration tests through the real FastAPI app.
 
 ```bash
 cd backend && python -m pytest

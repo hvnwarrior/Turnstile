@@ -209,3 +209,72 @@ def test_list_events(client):
     events = response.json()["events"]
     assert len(events) == 1
     assert events[0]["person_name"] == "Sam Ray"
+
+
+# ----------------------------------------------------------------------
+# Due-soon: the scheduler feed (polled by cron/n8n, reminders live there)
+# ----------------------------------------------------------------------
+
+
+def test_due_soon_endpoint_flags_overdue_and_upcoming(client):
+    """GET /events/{id}/due-soon returns unfinished tasks due within
+    the window, flags overdue, and excludes settled ones."""
+
+    response = post_hris(client, {
+        "type": "employee.terminated",
+        "person_name": "Sam Ray",
+        "requested_by": "bamboohr-sync",
+        "details": OFFBOARDING["details"],
+    })
+    assert response.status_code == 200
+    event_id = response.json()["event_id"]
+
+    # transfer_files is due ON the last day: from 2026-11-26 it is
+    # upcoming within the horizon (last_day 2026-12-04 is 8 days out;
+    # widen the window).
+    report = client.get(f"/events/{event_id}/due-soon?within_days=10")
+    assert report.status_code == 200
+    data = report.json()
+
+    ids = [t["id"] for t in data["tasks"]]
+    assert "transfer_files" in ids
+    assert "disable_sso_account" in ids
+    # Flagged upcoming, not overdue — the last day hasn't passed.
+    for task in data["tasks"]:
+        assert task["overdue"] is False
+
+    # Tight window: nothing due within 2 days from 2026-11-26.
+    tight = client.get(f"/events/{event_id}/due-soon?within_days=2")
+    assert tight.json()["tasks"] == []
+
+
+def test_due_soon_excludes_terminal_tasks(client):
+    """Completed tasks never appear in the scheduler feed, no matter
+    how late the clock says they were."""
+
+    response = post_hris(client, {
+        "type": "employee.terminated",
+        "person_name": "Sam Ray",
+        "requested_by": "bamboohr-sync",
+        "details": {**OFFBOARDING["details"], "last_day": "2026-11-20"},
+    })
+    event_id = response.json()["event_id"]
+
+    # Complete the first runnable batch (transfer_files,
+    # set_mail_forwarding are AUTO due 2026-11-20: already overdue).
+    advance = client.post(f"/events/{event_id}/advance").json()
+    for task in advance["cleared"]:
+        client.post(
+            f"/events/{event_id}/tasks/{task['id']}/execute",
+            json={"actor": "automation"},
+        )
+
+    report = client.get(f"/events/{event_id}/due-soon?within_days=2")
+    data = report.json()
+
+    assert "transfer_files" not in [t["id"] for t in data["tasks"]]
+    # disable_sso_account is gated, still pending on the completed
+    # deps -> awaiting approval -> due 2026-11-21: overdue AND in feed.
+    matching = [t for t in data["tasks"] if t["id"] == "disable_sso_account"]
+    assert matching
+    assert matching[0]["overdue"] is True

@@ -11,6 +11,8 @@ Endpoint map:
 - POST /events/{id}/advisor/suggest                LLM suggestions
 - POST /events/{id}/advisor/accept                 human accepts one
 - GET  /events/{id}/revocation-report              the offboarding ledger
+- GET  /events/{id}/due-soon?within_days=N         tasks due soon /
+                                                   overdue (scheduler feed)
 
 Every mutation loads the event from the store, applies the action, and
 persists task states back — the database is the source of truth, not
@@ -51,6 +53,7 @@ def _task_dicts(event) -> list[dict]:
             "status": task.status.value,
             "depends_on": list(task.depends_on),
             "assignees": list(task.assignees),
+            "due_date": task.due_date,
             "executed_by": task.executed_by,
             "decided_by": task.decided_by,
             "decision_note": task.decision_note,
@@ -116,6 +119,55 @@ def get_event(request: Request, event_id: int) -> dict:
         "requested_by": event.requested_by,
         "created_at": event.created_at,
         "tasks": _task_dicts(event),
+    }
+
+
+@router.get("/events/{event_id}/due-soon")
+def due_soon(
+    request: Request, event_id: int, within_days: int = 2
+) -> dict:
+    """Unfinished tasks whose due_date falls within `within_days`
+    days from today (or is already past). This is the feed a
+    scheduler (cron, n8n) polls to re-page assignees — the reminder
+    loop itself lives outside the API, on purpose. Only tasks that
+    still need human attention are listed; anything settled
+    (completed, rejected, failed) is exempt no matter how late."""
+    from datetime import date, datetime, timezone
+
+    services = get_turnstile_services(request.app.state)
+    event = _load_event(services, event_id)
+
+    today = datetime.now(timezone.utc).date()
+    horizon = today.fromordinal(today.toordinal() + within_days)
+
+    due = []
+    for task in event.tasks:
+        if task.terminal():
+            continue
+        if not task.due_date:
+            continue
+        try:
+            task_due = date.fromisoformat(task.due_date)
+        except ValueError:
+            continue
+        if task_due <= horizon:
+            due.append(
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": task.status.value,
+                    "due_date": task.due_date,
+                    "overdue": task_due < today,
+                    "assignees": list(task.assignees),
+                }
+            )
+
+    return {
+        "event_id": event_id,
+        "person_name": event.person_name,
+        "as_of": today.isoformat(),
+        "within_days": within_days,
+        "tasks": due,
     }
 
 
