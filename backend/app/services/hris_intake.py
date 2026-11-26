@@ -55,12 +55,14 @@ class HrisIntakeService:
         webhook_secret: str = "",
         require_signature: bool = True,
         clock=None,
+        audit_service=None,         # AuditLogService, for substitutions
     ) -> None:
         self.builder = builder
         self.engine = engine
         self.store = store
         self.webhook_secret = webhook_secret
         self.require_signature = require_signature
+        self.audit_service = audit_service
         from datetime import datetime, timezone
         self.clock = clock or (
             lambda: datetime.now(timezone.utc).isoformat()
@@ -143,6 +145,29 @@ class HrisIntakeService:
             }
 
         event = self.store.persist(result.event)
+
+        # A fallback assignment is a judgment made by the system on
+        # behalf of a human who was NOT resolvable: it must be as
+        # provable as the approvals are. Never silent.
+        for sub in result.substitutions:
+            if self.audit_service is None:
+                continue
+            self.audit_service.record(
+                event_type="assignee_fallback",
+                actor="turnstile",
+                details={
+                    # NOTE: no "event_type" key here — AuditLogService
+                    # FLATTENS details into top-level keys, and a key
+                    # named event_type would clobber the record's own
+                    # kind ("assignee_fallback").
+                    "person_event_id": event.id,
+                    "person_name": event.person_name,
+                    "task_id": sub["task_id"],
+                    "assigned_to": sub["assigned_to"],
+                    "reason": sub["reason"],
+                },
+            )
+
         ready = self.engine.next_batch(event)
         # Persist the intake-time batch transitions (PENDING ->
         # READY / AWAITING_APPROVAL) so a reload reflects reality.
@@ -153,6 +178,7 @@ class HrisIntakeService:
             "event_id": event.id,
             "event_type": event.event_type.value,
             "person_name": event.person_name,
+            "assignee_substitutions": result.substitutions,
             "ready_tasks": [
                 {"id": t.id, "title": t.title} for t in ready
             ],

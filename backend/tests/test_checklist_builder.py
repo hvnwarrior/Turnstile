@@ -11,6 +11,9 @@ Defining behaviors:
   task, so it can only run when everything else finished.
 """
 
+import hashlib
+import hmac
+
 import pytest
 
 from app.models import EventType, RiskTier, TaskStatus
@@ -234,3 +237,155 @@ def test_built_checklist_dependencies_resolve(builder):
             assert set(task.depends_on) <= ids, (
                 f"dangling dependency {task.id} -> {task.depends_on}"
             )
+
+
+# ----------------------------------------------------------------------
+# Fallback approver: no resolvable assignee -> IT, visibly
+# ----------------------------------------------------------------------
+
+NO_MANAGER_ONBOARDING = {
+    "role": "Customer Success",
+    "department": "Sales",
+    # manager ABSENT: role resolution finds no handle
+    "start_date": "2026-12-07",
+}
+
+NO_MANAGER_OFFBOARDING = {
+    "department": "Sales",
+    # manager ABSENT
+    "last_day": "2026-12-04",
+    "has_company_device": True,
+    "has_building_access": True,
+}
+
+
+@pytest.fixture
+def fallback_builder():
+    return ChecklistBuilder(
+        clock=lambda: "2026-11-25T10:00:00+00:00",
+        fallback_approver="it-admin",
+    )
+
+
+def test_fallback_assigns_unowned_gated_tasks(fallback_builder):
+    """No manager in intake: the manager-owned gated task is assigned
+    to the fallback approver instead of refusing the build."""
+
+    result = fallback_builder.build(
+        EventType.OFFBOARDING, "Sam Ray", "hr", NO_MANAGER_OFFBOARDING
+    )
+
+    assert result.ok
+    assert result.missing == []
+
+    reclaim = result.event.task_by_id("reclaim_device")
+    # Previously unowned; now IT's, by explicit substitution.
+    assert reclaim.assignees == ["it-admin"]
+    assert result.substitutions == [
+        {
+            "task_id": "reclaim_device",
+            "assigned_to": "it-admin",
+            "reason": "no_resolvable_assignee",
+        }
+    ]
+
+
+def test_fallback_used_across_templates(fallback_builder):
+    """Onboarding survives a missing manager too. Note: credential
+    handoff has roles (manager, it_admin) — IT resolves, so the task
+    is assigned WITHOUT a substitution; only manager-ONLY gates
+    produce substitutions (like offboarding's reclaim_device)."""
+
+    result = fallback_builder.build(
+        EventType.ONBOARDING, "Jordan Lee", "recruiting", NO_MANAGER_ONBOARDING
+    )
+
+    assert result.ok
+    handoff = result.event.task_by_id("hand_off_credentials")
+    assert handoff.assignees == ["it-admin"]
+    assert result.substitutions == []
+
+
+def test_no_fallback_still_refuses_unowned_gated_tasks(builder):
+    """Default builder (no fallback configured): the original fail-
+    closed stance is unchanged."""
+
+    result = builder.build(
+        EventType.OFFBOARDING, "Sam Ray", "hr", NO_MANAGER_OFFBOARDING
+    )
+
+    assert not result.ok
+    # Refused at intake validation: manager is still a required field
+    # when no fallback is configured.
+    assert "manager" in result.missing
+
+
+def test_fallback_substitution_audited(tmp_path):
+    """Substitutions surface through HRIS intake AND the audit log."""
+
+    from app.services.audit_service import AuditLogService
+    from app.services.event_store import EventStore
+    from app.services.execution_engine import DryRunExecutor, ExecutionEngine
+    from app.services.hris_intake import HrisIntakeService
+    import json as jsonlib
+
+    audit = AuditLogService(str(tmp_path / "audit.jsonl"))
+    builder = ChecklistBuilder(
+        clock=lambda: "2026-11-25T10:00:00+00:00",
+        fallback_approver="it-admin",
+    )
+    service = HrisIntakeService(
+        builder=builder,
+        engine=ExecutionEngine(executor=DryRunExecutor(), audit_service=audit),
+        store=EventStore(str(tmp_path / "db.sqlite")),
+        webhook_secret="whsec_test",
+        require_signature=True,
+        audit_service=audit,
+    )
+
+    body = jsonlib.dumps(
+        {
+            "type": "employee.terminated",
+            "person_name": "Sam Ray",
+            "requested_by": "hr",
+            "details": NO_MANAGER_OFFBOARDING,
+        }
+    ).encode()
+
+    signature = hmac.new(b"whsec_test", body, hashlib.sha256).hexdigest()
+    response = service.ingest(body, signature)
+
+    assert response["accepted"] is True
+    assert response["assignee_substitutions"] == [
+        {
+            "task_id": "reclaim_device",
+            "assigned_to": "it-admin",
+            "reason": "no_resolvable_assignee",
+        }
+    ]
+
+    with (tmp_path / "audit.jsonl").open(encoding="utf-8") as fh:
+        events = [jsonlib.loads(line) for line in fh if line.strip()]
+    fallback_events = [
+        e for e in events if e["event_type"] == "assignee_fallback"
+    ]
+    assert len(fallback_events) == 1
+    # Flattened detail keys, per the audit-log convention.
+    assert fallback_events[0]["task_id"] == "reclaim_device"
+    assert fallback_events[0]["assigned_to"] == "it-admin"
+    assert fallback_events[0]["reason"] == "no_resolvable_assignee"
+
+
+def test_fallback_does_not_touch_resolved_assignees(fallback_builder):
+    """Tasks that already resolve fine (e.g. disable_sso_account, IT
+    only) are untouched: no substitution noise."""
+
+    result = fallback_builder.build(
+        EventType.OFFBOARDING, "Sam Ray", "hr", NO_MANAGER_OFFBOARDING
+    )
+
+    assert result.event.task_by_id("disable_sso_account").assignees == [
+        "it-admin"
+    ]
+    substituted_ids = {s["task_id"] for s in result.substitutions}
+    assert "disable_sso_account" not in substituted_ids

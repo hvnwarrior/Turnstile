@@ -137,8 +137,13 @@ Interactive docs at `/docs` once the server runs.
    resolved from data you already have (manager from intake, IT admin
    from config) — never picked ad hoc per ticket. Only assignees may
    approve or reject, so the gate answers *who is allowed*, not just
-   *that someone must*. An irreversible step that resolves to no
-   accountable human refuses the build.
+   *that someone must*. By default, an irreversible step that resolves
+   to no accountable human refuses the build. When
+   `TURNSTILE_FALLBACK_APPROVER` is set, the step is assigned to that
+   handle instead — IT becomes the accountable owner by name — and the
+   substitution is recorded in the audit log (`assignee_fallback`) and
+   echoed in the intake response, so routing to IT is a provable
+   judgment, never a silent default.
 2. **Silence is a failure condition — in onboarding too.** Assignees
    are notified when they own a decision and when a co-assignee acts,
    and every notification is logged. Decisions propagate to the whole
@@ -215,12 +220,14 @@ Being explicit about what is real today and what is a seam:
 
 ## Testing
 
-54 tests, all offline: gate semantics, assignee authorization, refusal with exact missing
+59 tests, all offline: gate semantics, assignee authorization, refusal with exact missing
 lists, fail-closed signatures, persistence and reload, the
 closed-vocabulary advisor (including an LLM that tries to invent a
-task and one that lies about risk tiers), revocation verdicts, and
+task and one that lies about risk tiers), revocation verdicts,
 assignment notifications (fire-once, co-assignee decisions, logged),
-and full HTTP-flow integration tests through the real FastAPI app.
+the fallback approver (missing-manager gates route to IT, audited,
+fail-closed by default), and full HTTP-flow integration tests through
+the real FastAPI app.
 
 ```bash
 cd backend && python -m pytest

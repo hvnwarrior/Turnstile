@@ -16,6 +16,11 @@ class AppSettings(BaseSettings):
     # Handle substituted for the "it_admin" assignee role
     default_approver: str = "it-admin"
 
+    # When a gated task resolves to NO assignee (e.g. no manager in
+    # intake), assign it to this handle instead of refusing the build.
+    # Empty (default) keeps the fail-closed refusal.
+    fallback_approver: str = ""
+
     # LLM advisor (added next slice)
     anthropic_api_key: str = ""
 

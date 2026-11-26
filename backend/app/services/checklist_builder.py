@@ -174,6 +174,10 @@ class BuildResult:
     event: PersonEvent | None = None
     missing: list[str] = field(default_factory=list)
     message: str = ""
+    # Gated tasks that resolved to no assignee and were assigned to the
+    # fallback approver instead: [{"task_id", "assigned_to", "reason"}].
+    # Present only when fallback is configured; audited by the caller.
+    substitutions: list[dict] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -185,10 +189,19 @@ def _truthy(value) -> bool:
 
 
 class ChecklistBuilder:
-    def __init__(self, clock=None, default_approver: str = "it-admin") -> None:
+    def __init__(
+        self,
+        clock=None,
+        default_approver: str = "it-admin",
+        fallback_approver: str = "",
+    ) -> None:
         """clock: zero-arg callable returning an ISO timestamp string;
         defaults to utcnow. default_approver: the handle substituted for
-        the "it_admin" role. Injectable for tests."""
+        the "it_admin" role. fallback_approver: when a gated task
+        resolves to no assignee (e.g. manager missing from intake),
+        assign it to this handle instead of refusing the whole build.
+        Empty (default) keeps the fail-closed refusal. Injectable for
+        tests."""
 
         from datetime import datetime, timezone
 
@@ -196,6 +209,7 @@ class ChecklistBuilder:
             lambda: datetime.now(timezone.utc).isoformat()
         )
         self.default_approver = default_approver
+        self.fallback_approver = fallback_approver
 
     def build(
         self,
@@ -220,7 +234,14 @@ class ChecklistBuilder:
             )
 
         template = TEMPLATES[event_type]
-        required = REQUIRED_INTAKE_FIELDS[event_type]
+        required = list(REQUIRED_INTAKE_FIELDS[event_type])
+
+        if self.fallback_approver:
+            # A configured fallback absorbs an unresolvable manager:
+            # manager-owned gates route to IT (audited, never silent),
+            # so a missing manager no longer blocks the whole
+            # checklist. Without a fallback, manager stays required.
+            required = [f for f in required if f != "manager"]
 
         missing = [
             field_name
@@ -239,7 +260,7 @@ class ChecklistBuilder:
                 ),
             )
 
-        tasks, unowned = self._instantiate(template, details)
+        tasks, unowned, substitutions = self._instantiate(template, details)
 
         if unowned:
             # An irreversible step with no accountable human is a
@@ -262,6 +283,7 @@ class ChecklistBuilder:
                 created_at=self.clock(),
                 tasks=tasks,
             ),
+            substitutions=substitutions,
         )
 
     # ------------------------------------------------------------------
@@ -285,7 +307,7 @@ class ChecklistBuilder:
         return resolved
 
     def _instantiate(self, template, details: dict):
-        """Returns (tasks, unowned_gated_ids)."""
+        """Returns (tasks, unowned_gated_ids, substitutions)."""
 
         included_specs = [
             spec
@@ -298,6 +320,7 @@ class ChecklistBuilder:
 
         tasks: list[Task] = []
         unowned: list[str] = []
+        substitutions: list[dict] = []
 
         for spec in included_specs:
             dependencies = list(spec.depends_on)
@@ -313,7 +336,21 @@ class ChecklistBuilder:
             assignees = self._resolve_assignees(spec.assignee_roles, details)
 
             if spec.is_gated and not assignees:
-                unowned.append(spec.id)
+                if self.fallback_approver:
+                    # No accountable human resolvable from intake ->
+                    # an explicit, AUDITED assignment to the fallback
+                    # handle, so the decision has a name (IT) while a
+                    # better owner can be sorted out. Never silent.
+                    assignees = [self.fallback_approver]
+                    substitutions.append(
+                        {
+                            "task_id": spec.id,
+                            "assigned_to": self.fallback_approver,
+                            "reason": "no_resolvable_assignee",
+                        }
+                    )
+                else:
+                    unowned.append(spec.id)
 
             tasks.append(
                 Task(
@@ -325,7 +362,7 @@ class ChecklistBuilder:
                 )
             )
 
-        return tasks, unowned
+        return tasks, unowned, substitutions
 
 
 REQUIRED_INTAKE = ["person_name", "requested_by"]

@@ -24,13 +24,17 @@ def build_services(settings=None) -> dict:
         audit_service=audit,
         notification_service=notifications,
     )
-    builder = ChecklistBuilder(default_approver=settings.default_approver)
+    builder = ChecklistBuilder(
+        default_approver=settings.default_approver,
+        fallback_approver=settings.fallback_approver,
+    )
     hris_intake = HrisIntakeService(
         builder=builder,
         engine=engine,
         store=store,
         webhook_secret=settings.hris_webhook_secret,
         require_signature=settings.hris_require_signature,
+        audit_service=audit,
     )
     advisor = TaskAdvisor(llm_client=None, audit_service=audit)
     revocation_audit = RevocationAuditService()
