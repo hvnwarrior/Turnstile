@@ -1,14 +1,14 @@
 # Turnstile
 
-Employee onboarding and offboarding automation for small IT teams, with
+Employee onboarding and offboarding automation for IT teams, with
 human-in-the-loop execution. Turnstile builds a dependency-ordered
 checklist for every hire and departure, runs the safe steps
 automatically, and refuses to run the dangerous ones until a named human
 approves them.
 
 **Why it exists:** offboarding gaps — accounts left active after a
-departure — are one of the most common security audit findings in small
-companies, and they happen because the process lives in someone's head
+departure — are one of the most common security audit findings, and
+they happen because the process lives in someone's head
 or a stale spreadsheet. Turnstile makes the process executable,
 orderable, and provable.
 
@@ -208,8 +208,11 @@ Being explicit about what is real today and what is a seam:
 - The advisor runs on an injected client and ships disabled by default;
   wiring Anthropic is a config change, and the system works fully
   without it.
-- Single-process SQLite. Right-sized for a 15–80 person shop;
-  multi-worker deployment would swap the store, not the domain model.
+- Single-process SQLite, sized to the workload not the headcount:
+  onboarding/offboarding events are low-volume even at large
+  organizations, so one node comfortably serves hundreds of staff.
+  Multi-instance deployment would swap the store, not the domain
+  model — Postgres, a queue, nothing above it changes.
 
 **Next**
 - Minimal technician console (approve/reject UI over the API)
